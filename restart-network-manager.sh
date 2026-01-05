@@ -34,3 +34,10 @@ if command -v nmcli >/dev/null 2>&1; then
   sleep 1
   nmcli radio wifi on >/dev/null 2>&1 || true
 fi
+
+# Reinicia o nm-tray (ícone da bandeja) se estiver em ambiente gráfico
+if [ -n "${DISPLAY:-}" ]; then
+  echo "Reiniciando nm-tray..."
+  pkill -x nm-tray || true
+  nohup nm-tray >/dev/null 2>&1 &
+fi
