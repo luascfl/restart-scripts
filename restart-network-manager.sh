@@ -35,9 +35,24 @@ if command -v nmcli >/dev/null 2>&1; then
   nmcli radio wifi on >/dev/null 2>&1 || true
 fi
 
-# Reinicia o nm-tray (ícone da bandeja) se estiver em ambiente gráfico
-if [ -n "${DISPLAY:-}" ]; then
+# Reinicia o nm-tray (icone da bandeja) se estiver em ambiente grafico
+if [ -n "${DISPLAY:-}" ] && command -v nm-tray >/dev/null 2>&1; then
   echo "Reiniciando nm-tray..."
   pkill -x nm-tray || true
-  nohup nm-tray >/dev/null 2>&1 &
+
+  # Alguns session managers relancam o nm-tray. Aguarda antes de iniciar manualmente.
+  nm_tray_restarted=false
+  for _ in {1..5}; do
+    if pgrep -x nm-tray >/dev/null 2>&1; then
+      nm_tray_restarted=true
+      break
+    fi
+    sleep 1
+  done
+
+  if $nm_tray_restarted; then
+    echo "nm-tray ja voltou automaticamente; nao iniciando outra instancia."
+  else
+    nohup nm-tray >/dev/null 2>&1 &
+  fi
 fi

@@ -1,0 +1,24 @@
+Office Word MCP: não configurado (desativado via env)
+Excel MCP: não configurado (desativado via env)
+Playwright MCP: não configurado (npx/Node ausente ou desativado)
+Brave MCP: configurado
+Chart MCP: não configurado (npx ausente ou desativado)
+Markdownify MCP: não configurado (npx ausente ou desativado)
+Zotero MCP: não configurado (faltam ZOTERO_API_KEY/ZOTERO_USER_ID ou npx)
+Chrome DevTools MCP: não configurado (npx ausente ou desativado)
+Firecrawl MCP: não configurado (falta FIRECRAWL_API_KEY ou npx)
+Fireflies MCP: não configurado (falta FIREFLIES_API_KEY ou npx)
+LinkedIn MCP: não configurado (falta LINKEDIN_EMAIL/LINKEDIN_PASSWORD ou uvx)
+Repomix MCP: não configurado (npx ausente ou desativado)
+Browser-Use MCP: não configurado (npx ausente ou desativado (modo local))
+OpenRouter (tool): configurado
+Taskmaster MCP: não configurado (npx ausente ou desativado)
+Canva Dev MCP: não configurado (npx ausente ou desativado)
+YouTube MCP: não configurado (npx ausente ou desativado)
+GitHub MCP (remoto): não configurado (falta PAT/header ou npx)
+Sequential MCP: configurado
+Google Tasks MCP: não configurado (falta gcp-oauth.keys.json ou npx)
+FFmpeg MCP: não configurado (binário ffmpeg-mcp/uvx ausente ou desativado)
+MindsDB MCP: não configurado (docker ausente ou desativado)
+
+(Falha ao listar ferramentas: 'FastMCP' object has no attribute 'tools')
