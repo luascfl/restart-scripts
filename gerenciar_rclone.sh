@@ -82,15 +82,15 @@ fallback_list_services_from_dir() {
 list_services() {
     echo -e "${YELLOW}--- Serviços disponíveis (unit files) ---${NC}"
     local output
-    if output=$(user_systemctl list-unit-files --no-pager 'rclone-*.service' 2>&1); then
-        echo "$output" | tail -n +2 | while read -r unit state preset; do
-            if [[ -z "$unit" ]]; then
+    if output=$(user_systemctl list-unit-files --no-legend --no-pager 'rclone-*.service' 2>&1); then
+        while read -r unit state preset; do
+            if [[ -z "$unit" || "$unit" != rclone-*.service ]]; then
                 continue
             fi
             short="${unit#rclone-}"
             short="${short%.service}"
             printf "%-40s %-10s %s\n" "$short" "$state" "$unit"
-        done
+        done <<< "$output"
     else
         echo -e "${RED}Não foi possível acessar o barramento systemd --user:${NC}"
         echo "$output"
@@ -128,9 +128,12 @@ stop_rclone() {
     local filters=("$@")
     echo -e "${RED}Parando e desabilitando serviços systemd do rclone...${NC}"
     
-    # Lista serviços ativos ou carregados
-    SERVICES=$(resolve_services "units" "${filters[@]}")
-    
+    # Com filtros, resolve por unit files para permitir stop/restart de serviços inativos.
+    if [ "${#filters[@]}" -eq 0 ]; then
+        SERVICES=$(resolve_services "units")
+    else
+        SERVICES=$(resolve_services "files" "${filters[@]}")
+    fi
     if [ -n "$SERVICES" ]; then
         for SERVICE in $SERVICES;
         do
