@@ -101,6 +101,64 @@ list_services() {
     echo "Use 'on finance', 'off mega', etc., passando o trecho após 'rclone-'."
 }
 
+extract_remote_from_service() {
+    local service="$1"
+    local unit_path=""
+    local remote=""
+
+    unit_path=$(user_systemctl show "$service" --property=FragmentPath --value 2>/dev/null)
+    if [ -z "$unit_path" ] || [ ! -f "$unit_path" ]; then
+        return 1
+    fi
+
+    remote=$(awk '
+        BEGIN { FS="=" }
+        /^ExecStart=/ {
+            line=$2
+            if (match(line, /rclone mount "([^"]+:)"/, m)) {
+                print m[1]
+                exit
+            }
+            if (match(line, /rclone mount ([^[:space:]]+:)/, m)) {
+                print m[1]
+                exit
+            }
+        }
+    ' "$unit_path")
+
+    if [ -z "$remote" ]; then
+        return 1
+    fi
+
+    printf "%s\n" "$remote"
+}
+
+warn_remote_429_if_present() {
+    local service="$1"
+    local remote=""
+    local probe_log=""
+
+    remote=$(extract_remote_from_service "$service")
+    if [ -z "$remote" ]; then
+        return 0
+    fi
+
+    probe_log=$(mktemp)
+    if rclone lsd "$remote" --max-depth 1 --retries 1 --low-level-retries 1 --contimeout 10s --timeout 20s >"$probe_log" 2>>"$probe_log"; then
+        rm -f "$probe_log"
+        return 0
+    fi
+
+    if grep -q "429 Too Many Requests" "$probe_log"; then
+        echo -e "${YELLOW}[AVISO] $service recebeu resposta 429 no remoto \"$remote\".${NC}"
+        echo "Esse erro costuma indicar credencial inválida/expirada ou rate limit do provedor."
+        echo "Regrave com: rclone config (edite \"$remote\")"
+        echo "Teste direto com: rclone lsd \"$remote\" --retries 1 --low-level-retries 1"
+    fi
+
+    rm -f "$probe_log"
+}
+
 start_rclone() {
     local filters=("$@")
     echo -e "${GREEN}Habilitando e iniciando serviços systemd do rclone...${NC}"
@@ -117,6 +175,7 @@ start_rclone() {
     do
         echo "Iniciando $SERVICE..."
         user_systemctl enable "$SERVICE" --now
+        warn_remote_429_if_present "$SERVICE"
     done
     
     echo -e "${GREEN}Concluído. Verificando status...${NC}"
