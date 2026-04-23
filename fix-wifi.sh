@@ -102,7 +102,7 @@ install_package_if_missing() {
 detect_wifi_iface() {
   local iface
 
-  iface="$(nmcli -t -f DEVICE,TYPE device status | awk -F: '$2=="wifi" {print $1; exit}')"
+  iface="$(nmcli -t -f DEVICE,TYPE device status 2>/dev/null | awk -F: '$2=="wifi" {print $1; exit}')"
   if [[ -n "$iface" ]]; then
     printf '%s\n' "$iface"
     return 0
@@ -116,31 +116,13 @@ detect_wifi_iface() {
     fi
   fi
 
-  return 1
-}
-
-detect_tray_binary() {
-  if has_cmd nm-applet; then
-    printf 'nm-applet\n'
-    return 0
-  fi
-
-  if has_cmd nm-tray; then
-    printf 'nm-tray\n'
+  iface="$(ls /sys/class/net/ | grep -E '^wl' | head -1)"
+  if [[ -n "$iface" ]]; then
+    printf '%s\n' "$iface"
     return 0
   fi
 
   return 1
-}
-
-tray_exec_line() {
-  local tray_bin="$1"
-
-  case "$tray_bin" in
-    nm-applet) printf 'nm-applet --indicator\n' ;;
-    nm-tray) printf 'nm-tray\n' ;;
-    *) return 1 ;;
-  esac
 }
 
 detect_target_user() {
@@ -159,14 +141,16 @@ detect_target_user() {
 
 show_status() {
   local iface
-  local tray_bin
 
   iface="$(detect_wifi_iface || true)"
-  tray_bin="$(detect_tray_binary || true)"
 
   log "Status do NetworkManager"
   systemctl is-enabled NetworkManager || true
   systemctl is-active NetworkManager || true
+
+  log "Status do iwd"
+  systemctl is-enabled iwd || true
+  systemctl is-active iwd || true
 
   log "Status do serviço de auto recuperação"
   systemctl is-enabled "$SELFHEAL_SERVICE_NAME" || true
@@ -182,12 +166,6 @@ show_status() {
   else
     warn "Nenhuma interface Wi-Fi detectada"
   fi
-
-  if [[ -n "$tray_bin" ]]; then
-    log "Cliente de tray disponível: $tray_bin"
-  else
-    warn "Nenhum cliente de tray encontrado (nm-applet ou nm-tray)"
-  fi
 }
 
 remove_wifi_backend_iwd_from_file() {
@@ -201,6 +179,31 @@ remove_wifi_backend_iwd_from_file() {
     log "Removendo wifi.backend=iwd de $file_path"
     root_cmd sed -i '/^[[:space:]]*wifi\.backend=iwd[[:space:]]*$/d' "$file_path"
   fi
+}
+
+fix_tray_duplicates() {
+  # Desabilita nm-applet do sistema — Lubuntu usa nm-tray nativamente
+  if [[ -f /etc/xdg/autostart/nm-applet.desktop ]]; then
+    log "Desabilitando nm-applet duplicado do sistema"
+    root_cmd mv /etc/xdg/autostart/nm-applet.desktop \
+                /etc/xdg/autostart/nm-applet.desktop.bak || true
+  fi
+
+  # Remove autostart do tray criado por versões anteriores do script
+  local target_user
+  target_user="$(detect_target_user || true)"
+  if [[ -n "$target_user" ]]; then
+    local user_home
+    user_home="$(getent passwd "$target_user" | cut -d: -f6)"
+    local autostart_file="$user_home/.config/autostart/fix-wifi-networkmanager-tray.desktop"
+    if [[ -f "$autostart_file" ]]; then
+      log "Removendo autostart legado do tray"
+      rm -f "$autostart_file"
+    fi
+  fi
+
+  # Mata instâncias duplicadas na sessão atual
+  pkill -x nm-applet || true
 }
 
 cleanup_old_fix_and_conflicts() {
@@ -228,10 +231,10 @@ cleanup_old_fix_and_conflicts() {
     done < <(root_cmd find /etc/NetworkManager/conf.d -maxdepth 1 -type f -name '*.conf' -print)
   fi
 
-  if root_cmd systemctl list-unit-files iwd.service --no-legend | awk '{print $1}' | grep -q '^iwd.service$'; then
-    log "Desabilitando iwd.service para evitar conflitos com o backend padrão do NetworkManager"
-    root_cmd systemctl disable --now iwd.service || true
-  fi
+  # Garante que iwd está ativo — necessário para o driver iwlwifi neste kernel
+  log "Garantindo que iwd está ativo como backend de Wi-Fi"
+  root_cmd systemctl enable iwd.service || true
+  root_cmd systemctl start iwd.service || true
 
   if [[ "$changed" -eq 1 ]]; then
     root_cmd systemctl daemon-reload
@@ -239,96 +242,25 @@ cleanup_old_fix_and_conflicts() {
 }
 
 ensure_selfheal_service() {
-  local service_changed=0
-
   root_cmd install -m 0755 "$SCRIPT_PATH" "$INSTALLED_SCRIPT_PATH"
-
-  if ! root_cmd test -f "$SELFHEAL_SERVICE_PATH"; then
-    service_changed=1
-  fi
 
   root_cmd tee "$SELFHEAL_SERVICE_PATH" > /dev/null <<EOF
 [Unit]
 Description=Auto recuperação do Wi-Fi e indicador do NetworkManager
-After=NetworkManager.service
-Wants=NetworkManager.service
+After=iwd.service NetworkManager.service
+Wants=iwd.service NetworkManager.service
 
 [Service]
 Type=oneshot
+ExecStartPre=/bin/bash -c 'until iwctl station wlan0 show 2>/dev/null | grep -q "connected"; do sleep 2; done'
 ExecStart=${INSTALLED_SCRIPT_PATH} --self-heal
 
 [Install]
 WantedBy=multi-user.target
 EOF
 
-  service_changed=1
-
-  if [[ "$service_changed" -eq 1 ]]; then
-    root_cmd systemctl daemon-reload
-  fi
-
+  root_cmd systemctl daemon-reload
   root_cmd systemctl enable "$SELFHEAL_SERVICE_NAME" >/dev/null
-}
-
-ensure_tray_binary() {
-  local tray_bin
-
-  tray_bin="$(detect_tray_binary || true)"
-  if [[ -n "$tray_bin" ]]; then
-    printf '%s\n' "$tray_bin"
-    return 0
-  fi
-
-  if ! has_cmd apt-get; then
-    return 1
-  fi
-
-  log "Instalando cliente de tray do NetworkManager (network-manager-gnome)"
-  ensure_apt_updated_once
-  root_cmd env DEBIAN_FRONTEND=noninteractive apt-get install -y network-manager-gnome
-
-  tray_bin="$(detect_tray_binary || true)"
-  if [[ -n "$tray_bin" ]]; then
-    printf '%s\n' "$tray_bin"
-    return 0
-  fi
-
-  return 1
-}
-
-ensure_tray_autostart() {
-  local target_user="$1"
-  local tray_bin="$2"
-  local tray_exec
-  local user_home
-  local autostart_dir
-  local autostart_file
-
-  tray_exec="$(tray_exec_line "$tray_bin")"
-
-  user_home="$(getent passwd "$target_user" | cut -d: -f6)"
-  [[ -n "$user_home" ]] || {
-    warn "não consegui descobrir o HOME do usuário $target_user"
-    return 1
-  }
-
-  autostart_dir="$user_home/.config/autostart"
-  autostart_file="$autostart_dir/fix-wifi-networkmanager-tray.desktop"
-
-  log "Configurando autostart do tray para o usuário $target_user"
-  root_cmd mkdir -p "$autostart_dir"
-  root_cmd tee "$autostart_file" > /dev/null <<EOF
-[Desktop Entry]
-Type=Application
-Version=1.0
-Name=NetworkManager tray
-Comment=Inicia automaticamente o indicador de Wi-Fi
-Exec=$tray_exec
-X-GNOME-Autostart-enabled=true
-Terminal=false
-EOF
-
-  root_cmd chown "$target_user:$target_user" "$autostart_file"
 }
 
 restart_wifi_stack() {
@@ -337,92 +269,62 @@ restart_wifi_stack() {
   log "Desbloqueando rádio Wi-Fi"
   root_cmd rfkill unblock wifi || true
 
+  log "Reiniciando iwd"
+  root_cmd systemctl restart iwd.service
+  sleep 5
+
+  log "Aguardando iwd conectar..."
+  local attempts=0
+  while ! iwctl station "$iface" show 2>/dev/null | grep -q "connected"; do
+    sleep 2
+    attempts=$((attempts + 1))
+    if [[ $attempts -ge 15 ]]; then
+      warn "iwd não conectou em 30s — continuando assim mesmo"
+      break
+    fi
+  done
+
+  log "Rodando dhcpcd para garantir IP e rota"
+  root_cmd dhcpcd "$iface" || true
+  sleep 5
+
   log "Habilitando e reiniciando NetworkManager"
   root_cmd systemctl enable NetworkManager >/dev/null
   root_cmd systemctl restart NetworkManager
+  sleep 5
 
-  log "Ativando Wi-Fi e forçando scan"
-  nmcli radio wifi on
+  nmcli radio wifi on || true
   nmcli device set "$iface" managed yes || true
-  nmcli device wifi rescan ifname "$iface" || true
-  sleep 2
-
-  # Reusa perfis já conhecidos quando disponíveis.
-  nmcli device connect "$iface" || true
-}
-
-restart_tray_indicator_for_session() {
-  local tray_bin="$1"
-  local target_user="$2"
-  local uid runtime_dir display_env wayland_env xauth_env
-
-  uid="$(id -u "$target_user")"
-  runtime_dir="/run/user/$uid"
-  display_env="${DISPLAY:-}"
-  wayland_env="${WAYLAND_DISPLAY:-}"
-  xauth_env="${XAUTHORITY:-}"
-
-  if [[ -z "$display_env" && -z "$wayland_env" ]]; then
-    warn "sem sessão gráfica neste shell, o tray será iniciado automaticamente no próximo login"
-    return 0
-  fi
-
-  log "Reiniciando indicador de Wi-Fi na sessão atual"
-
-  case "$tray_bin" in
-    nm-applet)
-      run_as_user "$target_user" env \
-        DISPLAY="$display_env" \
-        WAYLAND_DISPLAY="$wayland_env" \
-        XAUTHORITY="$xauth_env" \
-        XDG_RUNTIME_DIR="$runtime_dir" \
-        bash -lc 'pkill -x nm-applet || true; nohup nm-applet --indicator >/dev/null 2>&1 &'
-      ;;
-    nm-tray)
-      run_as_user "$target_user" env \
-        DISPLAY="$display_env" \
-        WAYLAND_DISPLAY="$wayland_env" \
-        XAUTHORITY="$xauth_env" \
-        XDG_RUNTIME_DIR="$runtime_dir" \
-        bash -lc 'pkill -x nm-tray || true; nohup nm-tray >/dev/null 2>&1 &'
-      ;;
-    *)
-      warn "cliente de tray não suportado: $tray_bin"
-      ;;
-  esac
 }
 
 report_result() {
   local iface="$1"
   local state ip4
 
-  state="$(nmcli -t -f DEVICE,STATE device status | awk -F: -v iface="$iface" '$1==iface {print $2; exit}')"
-  ip4="$(nmcli -g IP4.ADDRESS device show "$iface" | awk 'NF {print; exit}')"
+  state="$(nmcli -t -f DEVICE,STATE device status 2>/dev/null | awk -F: -v iface="$iface" '$1==iface {print $2; exit}')"
+  ip4="$(nmcli -g IP4.ADDRESS device show "$iface" 2>/dev/null | awk 'NF {print; exit}')"
 
   printf '\n'
   log "Estado final da interface $iface: ${state:-desconhecido}"
 
   if [[ -n "$ip4" ]]; then
     log "IP obtido: $ip4"
+    ping -c 2 8.8.8.8 > /dev/null 2>&1 && log "Internet OK" || warn "sem rota para internet"
+    ping -c 2 google.com > /dev/null 2>&1 && log "DNS OK" || warn "DNS falhou"
   else
-    warn "Sem IP no momento"
-  fi
-
-  if [[ "$state" != "connected" ]]; then
-    warn "Em redes novas, selecione a rede no tray e informe senha uma vez para salvar o perfil"
+    warn "Sem IP — em redes novas, selecione a rede no tray e informe a senha uma vez para salvar o perfil"
   fi
 }
 
 bootstrap_full_fix() {
   local iface
-  local tray_bin
-  local target_user
 
   install_package_if_missing nmcli network-manager
   install_package_if_missing rfkill rfkill
   install_package_if_missing iw iw
-  install_package_if_missing systemctl systemd
+  install_package_if_missing dhcpcd dhcpcd
 
+  fix_tray_duplicates
   cleanup_old_fix_and_conflicts
   ensure_selfheal_service
 
@@ -430,20 +332,6 @@ bootstrap_full_fix() {
   [[ -n "$iface" ]] || die "nenhuma interface Wi-Fi detectada"
 
   restart_wifi_stack "$iface"
-
-  target_user="$(detect_target_user || true)"
-  if [[ -n "$target_user" ]]; then
-    tray_bin="$(ensure_tray_binary || true)"
-    if [[ -n "$tray_bin" ]]; then
-      ensure_tray_autostart "$target_user" "$tray_bin" || true
-      restart_tray_indicator_for_session "$tray_bin" "$target_user" || true
-    else
-      warn "não foi possível instalar/achar cliente de tray automaticamente"
-    fi
-  else
-    warn "não consegui detectar usuário de desktop para configurar autostart do tray"
-  fi
-
   report_result "$iface"
 }
 
@@ -453,6 +341,7 @@ run_self_heal() {
   has_cmd nmcli || die "nmcli não encontrado, rode o script sem parâmetros para bootstrap completo"
   has_cmd rfkill || die "rfkill não encontrado, rode o script sem parâmetros para bootstrap completo"
 
+  fix_tray_duplicates
   cleanup_old_fix_and_conflicts
 
   iface="$(detect_wifi_iface || true)"

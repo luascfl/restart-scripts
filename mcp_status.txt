@@ -17,7 +17,6 @@ Canva Dev MCP: não configurado (npx ausente ou desativado)
 YouTube MCP: não configurado (npx ausente ou desativado)
 GitHub MCP (remoto): não configurado (falta PAT/header ou npx)
 Sequential MCP: configurado
-Google Tasks MCP: não configurado (falta gcp-oauth.keys.json ou npx)
 FFmpeg MCP: não configurado (binário ffmpeg-mcp/uvx ausente ou desativado)
 MindsDB MCP: não configurado (docker ausente ou desativado)
 
